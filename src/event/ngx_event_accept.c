@@ -314,7 +314,7 @@ ngx_event_accept(ngx_event_t *ev)
     } while (ev->available);
 
     /* re-add event poll for listening */
-#if (HAVE_IO_URING)
+#if (NGX_HAVE_IO_URING)
 #if (NGX_HAVE_EPOLLEXCLUSIVE)
     if (ngx_event_flags & NGX_USE_EPOLL_EVENT) {
         if (ngx_add_event(ev, NGX_READ_EVENT, NGX_EXCLUSIVE_EVENT)

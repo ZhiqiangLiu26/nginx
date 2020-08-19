@@ -42,6 +42,8 @@ static ngx_event_module_t  ngx_select_module_ctx = {
 
     {
         ngx_select_add_event,              /* add an event */
+        NULL,
+        NULL,
         ngx_select_del_event,              /* delete an event */
         ngx_select_add_event,              /* enable an event */
         ngx_select_del_event,              /* disable an event */

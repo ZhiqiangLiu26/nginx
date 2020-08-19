@@ -14,15 +14,19 @@ typedef struct {
 } ngx_io_uring_conf_t;
 
 
-#if (NGX_HAVE_EPOLLRDHUP)
-static void ngx_io_uring_epoll_test_rdhup(ngx_cycle_t *cycle);
-#endif
-
 static ngx_int_t ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer);
 static void ngx_io_uring_done(ngx_cycle_t *cycle);
 static ngx_int_t ngx_io_uring_add_event(ngx_event_t *ev,
                                         ngx_int_t event,
                                         ngx_uint_t flags);
+static ngx_int_t ngx_io_uring_add_event_with_iovec(ngx_event_t *ev,
+                                        ngx_int_t event,
+                                        struct iovec *iov,
+                                        ngx_int_t count);
+static ngx_int_t ngx_io_uring_add_event_with_buf(ngx_event_t *ev,
+                                        ngx_int_t event,
+                                        u_char *buf,
+                                        size_t size);
 static ngx_int_t ngx_io_uring_del_event(ngx_event_t *ev, ngx_int_t event,
     ngx_uint_t flags);
 static ngx_int_t ngx_io_uring_add_connection(ngx_connection_t *c);
@@ -60,6 +64,8 @@ static ngx_event_module_t  ngx_io_uring_module_ctx = {
 
     {
         ngx_io_uring_add_event,             /* add an event */
+        ngx_io_uring_add_event_with_iovec,
+        ngx_io_uring_add_event_with_buf,
         ngx_io_uring_del_event,             /* delete an event */
         ngx_io_uring_add_event,             /* enable an event */
         ngx_io_uring_del_event,             /* disable an event */
@@ -87,66 +93,6 @@ ngx_module_t  ngx_io_uring_module = {
     NGX_MODULE_V1_PADDING
 };
 
-#if (NGX_HAVE_EPOLLRDHUP)
-static void ngx_io_uring_epoll_test_rdhup(ngx_cycle_t *cycle)
-{
-    int                 s[2], events, ret;
-    struct io_uring_cqe *cqe;
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ngx_ring);
-
-    if (!sqe) ngx_abort();
-
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, s) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "socketpair() failed");
-        return;
-    }
-
-    events = EPOLLET|EPOLLIN|EPOLLRDHUP;
-    io_uring_prep_poll_add(sqe, s[0], events);
-    ret = io_uring_submit(&ngx_ring);
-    if (ret < 0) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "io_uring_submit() failed");
-        goto failed;
-    }
-
-    if (close(s[1]) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "close() failed");
-        s[1] = -1;
-        goto failed;
-    }
-
-    s[1] = -1;
-
-    ret = io_uring_wait_cqe(&ngx_ring, &cqe);
-    if (ret < 0) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "io_uring_wait_cqe() failed");
-        goto failed;
-    }
-
-    ngx_use_epoll_rdhup = cqe->res & EPOLLRDHUP;
-
-    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
-                   "testing the EPOLLRDHUP flag: %s",
-                   ngx_use_epoll_rdhup ? "success" : "fail");
-
-failed:
-
-    if (s[1] != -1 && close(s[1]) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "close() failed");
-    }
-
-    if (close(s[0]) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "close() failed");
-    }
-}
-#endif
-
 static ngx_int_t
 ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
@@ -161,10 +107,6 @@ ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
             return NGX_ERROR;
         }
     }
-
-#if (NGX_HAVE_EPOLLRDHUP)
-    ngx_io_uring_epoll_test_rdhup(cycle);
-#endif
 
     if (nevents < urcf->entries / 2) {
         if (cqes) {
@@ -186,7 +128,8 @@ ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 
     ngx_event_flags = NGX_USE_CLEAR_EVENT
                       | NGX_USE_GREEDY_EVENT
-                      | NGX_USE_EPOLL_EVENT;
+                      | NGX_USE_EPOLL_EVENT
+                      | NGX_USE_IO_URING_EVENT;
 
     return NGX_OK;
 }
@@ -220,6 +163,109 @@ io_uring_remove_poll(struct io_uring *ring, void *data)
     if (!sqe) ngx_abort();
     io_uring_prep_poll_remove(sqe, data);
     io_uring_sqe_set_data(sqe, NULL);
+}
+
+static void
+io_uring_add_recv(struct io_uring *ring, int fd,
+                   u_char *buf,
+                   size_t size, void *data)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    /* TODO: !sqe ? */
+    if (!sqe) ngx_abort();
+    io_uring_prep_recv(sqe, fd, buf, size, 0);
+    io_uring_sqe_set_data(sqe, data);
+}
+
+static void
+io_uring_add_send(struct io_uring *ring, int fd,
+                  u_char *buf,
+                  size_t size, void *data)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    /* TODO: !sqe ? */
+    if (!sqe) ngx_abort();
+    io_uring_prep_send(sqe, fd, buf, size, 0);
+    io_uring_sqe_set_data(sqe, data);
+}
+
+static void
+io_uring_add_readv(struct io_uring *ring, int fd,
+                   struct iovec *iov,
+                   ngx_int_t count, void *data)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    /* TODO: !sqe ? */
+    if (!sqe) ngx_abort();
+    io_uring_prep_readv(sqe, fd, iov, count, 0);
+    io_uring_sqe_set_data(sqe, data);
+}
+
+static void
+io_uring_add_writev(struct io_uring *ring, int fd,
+                    struct iovec *iov,
+                    ngx_int_t count, void *data)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    /* TODO: !sqe ? */
+    if (!sqe) ngx_abort();
+    io_uring_prep_writev(sqe, fd, iov, count, 0);
+    io_uring_sqe_set_data(sqe, data);
+}
+
+static ngx_int_t ngx_io_uring_add_event_with_buf(ngx_event_t *ev,
+                                        ngx_int_t event,
+                                        u_char *buf,
+                                        size_t size)
+{
+    ngx_connection_t *c = ev->data;
+
+    ngx_log_debug4(NGX_LOG_DEBUG_EVENT, ev->log, 0,
+                   "io_uring add event with buf: fd:%d ev:%08XD, data:%p, size %uz",
+                   c->fd, event, (void *) ((uintptr_t) c), size);
+
+    if (event == NGX_READ_EVENT) {
+        io_uring_add_recv(&ngx_ring, c->fd, buf, size,
+                           (void *) ((uintptr_t) c | ev->instance | 0x6));
+    } else {
+        io_uring_add_send(&ngx_ring, c->fd, buf, size,
+                           (void *) ((uintptr_t) c | ev->instance | 0x2));
+    }
+
+    ev->active = 1;
+    ev->complete = 0;
+
+    return NGX_OK;
+
+}
+
+static ngx_int_t ngx_io_uring_add_event_with_iovec(ngx_event_t *ev,
+                                        ngx_int_t event,
+                                        struct iovec *iov,
+                                        ngx_int_t count)
+{
+    ngx_connection_t *c = ev->data;
+
+    ngx_log_debug3(NGX_LOG_DEBUG_EVENT, ev->log, 0,
+                   "io_uring add event with iovec: fd:%d ev:%08XD, data:%p",
+                   c->fd, event, (void *) ((uintptr_t) c));
+
+    if (event == NGX_READ_EVENT) {
+        io_uring_add_readv(&ngx_ring, c->fd, iov, count,
+                           (void *) ((uintptr_t) c | ev->instance | 0x6));
+    } else {
+        io_uring_add_writev(&ngx_ring, c->fd, iov, count,
+                           (void *) ((uintptr_t) c | ev->instance | 0x2));
+    }
+
+    ev->active = 1;
+    ev->complete = 0;
+
+    return NGX_OK;
 }
 
 static ngx_int_t
@@ -317,7 +363,7 @@ static ngx_int_t
 ngx_io_uring_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 {
     uint32_t           cqe_count, revents;
-    ngx_int_t          instance, i;
+    ngx_int_t          instance, i, rw;
     ngx_uint_t         level;
     ngx_err_t          err = NGX_OK;
     ngx_event_t       *rev, *wev;
@@ -362,7 +408,8 @@ ngx_io_uring_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t fla
 
         data = io_uring_cqe_get_data(cqe);
         instance = (uintptr_t) data & 1;
-        c = (ngx_connection_t *) ((uintptr_t) data & (uintptr_t) ~1);
+        rw = (uintptr_t) data & 0x2;
+        c = (ngx_connection_t *) ((uintptr_t) data & (uintptr_t) ~0x7);
 
         rev = c->read;
 
@@ -380,74 +427,130 @@ ngx_io_uring_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t fla
             continue;
         }
 
-        revents = cqe->res;
-        io_uring_cqe_seen(&ngx_ring, cqe);
-
         ngx_log_debug5(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
-                       "io_uring_peek_cqe: fd:%d ev:%04XD d:%p listening:%p active:%d",
-                       c->fd, revents, data, c->listening, rev->active);
+                       "io_uring_peek_cqe: fd:%d res:%d d:%p listening:%p active:%d",
+                       c->fd, cqe->res, data, c->listening, rev->active);
 
-        if (revents & (EPOLLERR|EPOLLHUP)) {
-            ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
-                           "io_uring_peek_cqe error on fd:%d ev:%04XD",
-                           c->fd, revents);
+        if (!rw) { /* poll_add request */
+            revents = cqe->res;
+            io_uring_cqe_seen(&ngx_ring, cqe);
 
-            /*
-             * if the error events were returned, add EPOLLIN and EPOLLOUT
-             * to handle the events at least in one active handler
-             */
-
-            revents |= EPOLLIN|EPOLLOUT;
-        }
-
-        if ((revents & EPOLLIN) && rev->active) {
-
-#if (NGX_HAVE_EPOLLRDHUP)
-            if (revents & EPOLLRDHUP) {
-                rev->pending_eof = 1;
+            if (cqe->res < 0) {
+                ngx_log_error(NGX_LOG_ALERT, cycle->log, revents, "poll request failed");
+                continue;
             }
+            if (revents & (EPOLLERR|EPOLLHUP)) {
+                ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                               "io_uring_peek_cqe error on fd:%d ev:%04XD",
+                               c->fd, revents);
+
+                /*
+                 * if the error events were returned, add EPOLLIN and EPOLLOUT
+                 * to handle the events at least in one active handler
+                 */
+
+                revents |= EPOLLIN|EPOLLOUT;
+            }
+
+            if ((revents & EPOLLIN) && rev->active) {
+                rev->ready = 1;
+                rev->available = -1;
+                rev->active = 0;
+
+                if (flags & NGX_POST_EVENTS) {
+                    queue = rev->accept ? &ngx_posted_accept_events
+                                        : &ngx_posted_events;
+
+                    ngx_post_event(rev, queue);
+
+                } else {
+                   rev->handler(rev);
+                }
+            }
+
+            wev = c->write;
+
+            if ((revents & EPOLLOUT) && wev->active) {
+
+                if (c->fd == -1 || wev->instance != instance) {
+
+                    /*
+                     * the stale event from a file descriptor
+                     * that was just closed in this iteration
+                     */
+
+                    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                                   "epoll: stale event %p", c);
+                    continue;
+                }
+
+                wev->ready = 1;
+                wev->active = 0;
+#if (NGX_THREADS)
+                wev->complete = 1;
 #endif
 
-            rev->ready = 1;
+                if (flags & NGX_POST_EVENTS) {
+                    ngx_post_event(wev, &ngx_posted_events);
+
+                } else {
+                    wev->handler(wev);
+                }
+            }
+	    continue;
+        }
+
+	/* readv/writev request */
+	if (((uintptr_t) data) & 0x4) {
+            if (!rev->active) {
+                ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                               "readv: not active %p", c);
+
+                io_uring_cqe_seen(&ngx_ring, cqe);
+                continue;
+	    }
+            rev->nbytes = cqe->res;
             rev->available = -1;
             rev->active = 0;
+            rev->complete = 1;
+            io_uring_cqe_seen(&ngx_ring, cqe);
+
+            ngx_log_debug5(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                           "io_uring_read_ready: fd:%d d:%p connection:%p active:%d nbytes:%uz",
+                           c->fd, data, c, rev->active, rev->nbytes);
 
             if (flags & NGX_POST_EVENTS) {
-                queue = rev->accept ? &ngx_posted_accept_events
-                                    : &ngx_posted_events;
-
-                ngx_post_event(rev, queue);
-
+                ngx_post_event(rev, &ngx_posted_events);
             } else {
                 rev->handler(rev);
             }
-        }
-
-        wev = c->write;
-
-        if ((revents & EPOLLOUT) && wev->active) {
-
-            if (c->fd == -1 || wev->instance != instance) {
-
-                /*
-                 * the stale event from a file descriptor
-                 * that was just closed in this iteration
-                 */
-
+	} else {
+            wev = c->write;
+            if (!wev->active) {
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
-                               "epoll: stale event %p", c);
+                               "writev: not active %p", c);
+
+                io_uring_cqe_seen(&ngx_ring, cqe);
                 continue;
             }
 
-            wev->ready = 1;
-            wev->active = 0;
-#if (NGX_THREADS)
+            if (c->fd == -1 || wev->instance != instance) {
+                ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                               "writev: stale event %p", c);
+                io_uring_cqe_seen(&ngx_ring, cqe);
+                continue;
+	    }
+	    wev->nbytes = cqe->res;
             wev->complete = 1;
-#endif
+            wev->active = 0;
+            io_uring_cqe_seen(&ngx_ring, cqe);
+
+            ngx_log_debug5(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                           "io_uring_write_ready: fd:%d d:%p connection:%p active:%d nbytes:%uz",
+                           c->fd, data, c, wev->active, wev->nbytes);
 
             if (flags & NGX_POST_EVENTS) {
                 ngx_post_event(wev, &ngx_posted_events);
-
             } else {
                 wev->handler(wev);
             }

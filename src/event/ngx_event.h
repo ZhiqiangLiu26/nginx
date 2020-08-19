@@ -116,6 +116,10 @@ struct ngx_event_s {
     /* the posted queue */
     ngx_queue_t      queue;
 
+#if (NGX_HAVE_IO_URING)
+    ssize_t          nbytes;
+#endif
+
 #if 0
 
     /* the threads support */
@@ -169,6 +173,12 @@ struct ngx_event_aio_s {
 
 typedef struct {
     ngx_int_t  (*add)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
+    ngx_int_t  (*add_with_iovec)(ngx_event_t *ev,
+                                 ngx_int_t event, struct iovec *iov,
+	                         ngx_int_t count);
+    ngx_int_t  (*add_with_buf)(ngx_event_t *ev,
+                                 ngx_int_t event, u_char *buf,
+	                         size_t size);
     ngx_int_t  (*del)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
 
     ngx_int_t  (*enable)(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags);
@@ -270,6 +280,9 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
  * The event filter support vnode notifications: kqueue.
  */
 #define NGX_USE_VNODE_EVENT      0x00002000
+
+/* The event filter support io_uring */
+#define NGX_USE_IO_URING_EVENT   0x00004000
 
 /*
  * The event filter is deleted just before the closing file.
@@ -404,6 +417,8 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
 #define ngx_done_events      ngx_event_actions.done
 
 #define ngx_add_event        ngx_event_actions.add
+#define ngx_add_event_with_iovec ngx_event_actions.add_with_iovec
+#define ngx_add_event_with_buf ngx_event_actions.add_with_buf
 #define ngx_del_event        ngx_event_actions.del
 #define ngx_add_conn         ngx_event_actions.add_conn
 #define ngx_del_conn         ngx_event_actions.del_conn
@@ -513,7 +528,18 @@ void ngx_debug_accepted_connection(ngx_event_conf_t *ecf, ngx_connection_t *c);
 void ngx_process_events_and_timers(ngx_cycle_t *cycle);
 ngx_int_t ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags);
 ngx_int_t ngx_handle_write_event(ngx_event_t *wev, size_t lowat);
-
+ngx_int_t ngx_handle_read_event_with_iovec(ngx_event_t *rev,
+                                           struct iovec *iov,
+                                           ngx_int_t count);
+ngx_int_t ngx_handle_write_event_with_iovec(ngx_event_t *wev,
+                                            struct iovec *iov,
+                                            ngx_int_t count);
+ngx_int_t ngx_handle_read_event_with_buf(ngx_event_t *rev,
+                                         u_char *buf,
+                                         size_t size);
+ngx_int_t ngx_handle_write_event_with_buf(ngx_event_t *wev,
+                                          u_char *buf,
+                                          size_t size);
 
 #if (NGX_WIN32)
 void ngx_event_acceptex(ngx_event_t *ev);

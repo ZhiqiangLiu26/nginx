@@ -171,7 +171,7 @@ static ngx_event_module_t  ngx_event_core_module_ctx = {
     ngx_event_core_create_conf,            /* create configuration */
     ngx_event_core_init_conf,              /* init configuration */
 
-    { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
+    { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 };
 
 
@@ -265,6 +265,45 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
 
+ngx_int_t
+ngx_handle_read_event_with_buf(ngx_event_t *rev, u_char *buf, size_t size)
+{
+    if (!rev->active && !rev->complete) {
+        if (ngx_add_event_with_buf(rev, NGX_READ_EVENT, buf, size) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+    return NGX_OK;
+}
+
+ngx_int_t
+ngx_handle_write_event_with_buf(ngx_event_t *wev, u_char *buf, size_t size)
+{
+    if (!wev->active && !wev->complete) {
+        if (ngx_add_event_with_buf(wev, NGX_WRITE_EVENT, buf, size) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+    return NGX_OK;
+}
+
+ngx_int_t
+ngx_handle_read_event_with_iovec(ngx_event_t *rev, struct iovec *iov, ngx_int_t count)
+{
+    if (!rev->active && !rev->complete) {
+        if (ngx_add_event_with_iovec(rev, NGX_READ_EVENT, iov, count) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+    return NGX_OK;
+}
+
+ngx_int_t
+ngx_handle_write_event_with_iovec(ngx_event_t *wev, struct iovec *iov, ngx_int_t count)
+{
+    if (!wev->active && !wev->complete) {
+        if (ngx_add_event_with_iovec(wev, NGX_WRITE_EVENT, iov, count) == NGX_ERROR)
+            return NGX_ERROR;
+    }
+    return NGX_OK;
+}
 
 ngx_int_t
 ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)

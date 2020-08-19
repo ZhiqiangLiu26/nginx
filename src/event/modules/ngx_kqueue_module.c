@@ -80,6 +80,8 @@ static ngx_event_module_t  ngx_kqueue_module_ctx = {
 
     {
         ngx_kqueue_add_event,              /* add an event */
+        NULL,
+        NULL,
         ngx_kqueue_del_event,              /* delete an event */
         ngx_kqueue_add_event,              /* enable an event */
         ngx_kqueue_del_event,              /* disable an event */

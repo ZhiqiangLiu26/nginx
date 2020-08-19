@@ -59,6 +59,8 @@ static ngx_event_module_t  ngx_iocp_module_ctx = {
 
     {
         ngx_iocp_add_event,                /* add an event */
+        NULL,
+        NULL,
         NULL,                              /* delete an event */
         NULL,                              /* enable an event */
         NULL,                              /* disable an event */

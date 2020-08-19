@@ -36,6 +36,8 @@ static ngx_event_module_t  ngx_poll_module_ctx = {
 
     {
         ngx_poll_add_event,                /* add an event */
+        NULL,
+        NULL,
         ngx_poll_del_event,                /* delete an event */
         ngx_poll_add_event,                /* enable an event */
         ngx_poll_del_event,                /* disable an event */
