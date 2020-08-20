@@ -193,6 +193,8 @@ struct ngx_connection_s {
 #if (NGX_THREADS || NGX_COMPAT)
     ngx_thread_task_t  *sendfile_task;
 #endif
+
+    struct iovec iovs[NGX_IOVS_PREALLOCATE];
 };
 
 

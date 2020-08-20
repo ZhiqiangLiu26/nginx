@@ -23,7 +23,6 @@ ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     ngx_chain_t   *cl;
     ngx_event_t   *wev;
     ngx_iovec_t    vec;
-    struct iovec   iovs[NGX_IOVS_PREALLOCATE];
 
     wev = c->write;
 
@@ -50,7 +49,7 @@ ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
     send = 0;
 
-    vec.iovs = iovs;
+    vec.iovs = c->iovs;
     vec.nalloc = NGX_IOVS_PREALLOCATE;
 
     for ( ;; ) {

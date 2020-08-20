@@ -55,7 +55,6 @@ ngx_linux_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     ngx_event_t   *wev;
     ngx_chain_t   *cl;
     ngx_iovec_t    header;
-    struct iovec   headers[NGX_IOVS_PREALLOCATE];
 
     wev = c->write;
 
@@ -73,7 +72,7 @@ ngx_linux_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
     send = 0;
 
-    header.iovs = headers;
+    header.iovs = c->iovs;
     header.nalloc = NGX_IOVS_PREALLOCATE;
 
     for ( ;; ) {
