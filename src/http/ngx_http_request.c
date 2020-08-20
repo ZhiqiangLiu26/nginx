@@ -45,6 +45,9 @@ static void ngx_http_terminate_handler(ngx_http_request_t *r);
 static void ngx_http_finalize_connection(ngx_http_request_t *r);
 static ngx_int_t ngx_http_set_write_handler(ngx_http_request_t *r);
 static void ngx_http_writer(ngx_http_request_t *r);
+#if (NGX_HAVE_IO_URING)
+static void ngx_http_writer_done(ngx_http_request_t *r);
+#endif
 static void ngx_http_request_finalizer(ngx_http_request_t *r);
 
 static void ngx_http_set_keepalive(ngx_http_request_t *r);
@@ -2597,6 +2600,13 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         c->error = 1;
     }
 
+#if (NGX_HAVE_IO_URING)
+    if (rc == NGX_AGAIN && c->write->active && !c->write->complete) {
+            r->write_event_handler = ngx_http_writer_done;
+        return;
+    }
+#endif
+
     if (rc == NGX_DECLINED) {
         r->content_handler = NULL;
         r->write_event_handler = ngx_http_core_run_phases;
@@ -2921,6 +2931,101 @@ ngx_http_set_write_handler(ngx_http_request_t *r)
     return NGX_OK;
 }
 
+#if (NGX_HAVE_IO_URING)
+static ssize_t ngx_get_async_write_bytes(ngx_event_t *wev)
+{
+    ngx_err_t err;
+    ssize_t n;
+    ngx_connection_t          *c = wev->data;
+
+    n = wev->nbytes;
+    wev->complete = 0;
+    ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "get write result: fd:%d %z", c->fd, n);
+    if (n > 0)
+        return n;
+
+    err = -n;
+    wev->error = 1;
+    ngx_connection_error(c, err, "writev() failed");
+    return NGX_ERROR;
+}
+
+static void
+ngx_http_writer_done(ngx_http_request_t *r)
+{
+    ssize_t n, sent, nsent;
+    off_t limit;
+    ngx_connection_t *c = r->connection;
+    ngx_event_t *wev = c->write;
+    ngx_chain_t *cl, *ln, *chain;
+    ngx_msec_t delay;
+
+    if (!wev->complete)
+        ngx_log_error(NGX_LOG_CRIT, c->log, NGX_ERROR, "write not complete");
+
+    n = ngx_get_async_write_bytes(wev);
+    sent = (n < 0) ? 0 : n;
+    c->sent += sent;
+    chain = ngx_chain_update_sent(r->out, sent);
+
+    if (r->limit_rate) {
+
+        nsent = c->sent;
+
+        if (r->limit_rate_after) {
+
+            sent -= r->limit_rate_after;
+            if (sent < 0) {
+                sent = 0;
+            }
+
+            nsent -= r->limit_rate_after;
+            if (nsent < 0) {
+                nsent = 0;
+            }
+        }
+
+        delay = (ngx_msec_t) ((nsent - sent) * 1000 / r->limit_rate);
+
+        if (delay > 0) {
+            limit = 0;
+            c->write->delayed = 1;
+            ngx_add_timer(c->write, delay);
+        }
+    }
+
+    if (limit
+        && c->write->ready
+               && c->sent - sent >= limit - (off_t) (2 * ngx_pagesize))
+    {
+        c->write->delayed = 1;
+        ngx_add_timer(c->write, 1);
+    }
+
+    for (cl = r->out; cl && cl != chain; /* void */) {
+        ln = cl;
+        cl = cl->next;
+        ngx_free_chain(r->pool, ln);
+    }
+
+    r->out = chain;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                   "http write done chain %p", chain);
+
+    /* TODO: should traverse the filter layters */
+    if (chain) {
+        /* need to send the rest buf */
+        c->buffered |= NGX_HTTP_WRITE_BUFFERED;
+        ngx_http_finalize_request(r, NGX_AGAIN);
+    } else {
+        c->buffered &= ~NGX_HTTP_WRITE_BUFFERED;
+        r->write_event_handler = ngx_http_request_empty_handler;
+        ngx_http_finalize_request(r, NGX_DONE);
+    }
+}
+#endif
 
 static void
 ngx_http_writer(ngx_http_request_t *r)

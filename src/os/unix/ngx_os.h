@@ -31,6 +31,9 @@ typedef struct {
     ngx_send_pt        udp_send;
     ngx_send_chain_pt  udp_send_chain;
     ngx_send_chain_pt  send_chain;
+#if (NGX_HAVE_IO_URING)
+    ngx_send_chain_pt  async_send_chain;
+#endif
     ngx_uint_t         flags;
 } ngx_os_io_t;
 
@@ -48,6 +51,8 @@ ssize_t ngx_readv_chain(ngx_connection_t *c, ngx_chain_t *entry, off_t limit);
 ssize_t ngx_udp_unix_recv(ngx_connection_t *c, u_char *buf, size_t size);
 ssize_t ngx_unix_send(ngx_connection_t *c, u_char *buf, size_t size);
 ngx_chain_t *ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in,
+    off_t limit);
+ngx_chain_t *ngx_async_writev_chain(ngx_connection_t *c, ngx_chain_t *in,
     off_t limit);
 ssize_t ngx_udp_unix_send(ngx_connection_t *c, u_char *buf, size_t size);
 ngx_chain_t *ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in,

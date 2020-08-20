@@ -436,6 +436,9 @@ extern ngx_os_io_t  ngx_io;
 #define ngx_udp_recv         ngx_io.udp_recv
 #define ngx_send             ngx_io.send
 #define ngx_send_chain       ngx_io.send_chain
+#if (NGX_HAVE_IO_URING)
+#define ngx_async_send_chain  ngx_io.async_send_chain
+#endif
 #define ngx_udp_send         ngx_io.udp_send
 #define ngx_udp_send_chain   ngx_io.udp_send_chain
 

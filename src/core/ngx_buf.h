@@ -123,6 +123,7 @@ typedef struct {
 
 
 #define NGX_CHAIN_ERROR     (ngx_chain_t *) NGX_ERROR
+#define NGX_CHAIN_EAGAIN    (ngx_chain_t *) NGX_EAGAIN
 
 
 #define ngx_buf_in_memory(b)       ((b)->temporary || (b)->memory || (b)->mmap)

@@ -291,7 +291,11 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http write filter limit %O", limit);
 
+#if (NGX_HAVE_IO_URING)
+    chain = c->async_send_chain(c, r->out, limit);
+#else
     chain = c->send_chain(c, r->out, limit);
+#endif
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http write filter %p", chain);
@@ -300,6 +304,8 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
         c->error = 1;
         return NGX_ERROR;
     }
+    if (chain == NGX_CHAIN_EAGAIN)
+        return NGX_AGAIN;
 
     if (r->limit_rate) {
 

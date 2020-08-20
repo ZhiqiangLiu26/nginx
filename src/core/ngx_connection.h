@@ -132,6 +132,7 @@ struct ngx_connection_s {
     ngx_send_pt         send;
     ngx_recv_chain_pt   recv_chain;
     ngx_send_chain_pt   send_chain;
+    ngx_send_chain_pt   async_send_chain;
 
     ngx_listening_t    *listening;
 

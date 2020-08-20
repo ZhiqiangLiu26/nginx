@@ -36,9 +36,15 @@ static ngx_os_io_t ngx_freebsd_io = {
     ngx_udp_unix_sendmsg_chain,
 #if (NGX_HAVE_SENDFILE)
     ngx_freebsd_sendfile_chain,
+#if (NGX_HAVE_IO_URING)
+    NULL,
+#endif
     NGX_IO_SENDFILE
 #else
     ngx_writev_chain,
+#if (NGX_HAVE_IO_URING)
+    NULL,
+#endif
     0
 #endif
 };

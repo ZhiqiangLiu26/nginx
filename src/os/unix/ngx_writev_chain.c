@@ -9,6 +9,57 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
+#if (NGX_HAVE_IO_URING)
+ngx_chain_t *
+ngx_async_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
+{
+    ngx_chain_t   *cl;
+    ngx_event_t   *wev;
+    ngx_iovec_t    vec;
+
+    wev = c->write;
+
+    /* the maximum limit size is the maximum size_t value - the page size */
+
+    if (limit == 0 || limit > (off_t) (NGX_MAX_SIZE_T_VALUE - ngx_pagesize)) {
+        limit = NGX_MAX_SIZE_T_VALUE - ngx_pagesize;
+    }
+
+    vec.iovs = c->iovs;
+    vec.nalloc = NGX_IOVS_PREALLOCATE;
+
+    /* create the iovec and coalesce the neighbouring bufs */
+    cl = ngx_output_chain_to_iovec(&vec, in, limit, c->log);
+    if (cl == NGX_CHAIN_ERROR) {
+        return NGX_CHAIN_ERROR;
+    }
+
+    if (cl && cl->buf->in_file) {
+        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
+                      "file buf in writev "
+                      "t:%d r:%d f:%d %p %p-%p %p %O-%O",
+                      cl->buf->temporary,
+                      cl->buf->recycled,
+                      cl->buf->in_file,
+                      cl->buf->start,
+                      cl->buf->pos,
+                      cl->buf->last,
+                      cl->buf->file,
+                      cl->buf->file_pos,
+                      cl->buf->file_last);
+
+        ngx_debug_point();
+
+        return NGX_CHAIN_ERROR;
+    }
+
+    if (ngx_add_event_with_iovec(wev, NGX_WRITE_EVENT,
+                                 vec.iovs, vec.count) != NGX_OK) {
+        return NGX_CHAIN_ERROR;
+    }
+    return NGX_CHAIN_EAGAIN;
+}
+#endif
 
 ngx_chain_t *
 ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
@@ -79,7 +130,15 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
         send += vec.size;
 
+#if (NGX_HAVE_IO_URING)
+        if (ngx_add_event_with_iovec(wev, NGX_WRITE_EVENT,
+                                     vec.iovs, vec.count) != NGX_OK) {
+            return NGX_CHAIN_ERROR;
+        }
+	return NGX_CHAIN_EAGAIN;
+#else
         n = ngx_writev(c, &vec);
+#endif
 
         if (n == NGX_ERROR) {
             return NGX_CHAIN_ERROR;

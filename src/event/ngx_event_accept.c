@@ -206,6 +206,9 @@ ngx_event_accept(ngx_event_t *ev)
         c->send = ngx_send;
         c->recv_chain = ngx_recv_chain;
         c->send_chain = ngx_send_chain;
+#if (NGX_HAVE_IO_URING)
+        c->async_send_chain = ngx_async_send_chain;
+#endif
 
         c->log = log;
         c->pool->log = log;
