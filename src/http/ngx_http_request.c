@@ -350,7 +350,7 @@ ngx_http_init_connection(ngx_connection_t *c)
     }
 
     if (rev->ready) {
-        /* the deferred accept(), iocp */
+        /* the deferred accept(), iocp, io_uring */
 
         if (ngx_use_accept_mutex) {
             ngx_post_event(rev, &ngx_posted_events);
@@ -370,6 +370,134 @@ ngx_http_init_connection(ngx_connection_t *c)
     }
 }
 
+#if (NGX_HAVE_IO_URING)
+static ssize_t ngx_get_async_read_bytes(ngx_event_t *rev)
+{
+    ngx_err_t err;
+    ssize_t n;
+    ngx_connection_t          *c = rev->data;
+
+    n = rev->nbytes;
+    rev->complete = 0;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "get read result: fd:%d %z", c->fd, n);
+    if (n == 0) {
+        rev->eof = 1;
+        ngx_log_error(NGX_LOG_INFO, c->log, 0,
+                      "client closed connection");
+        return 0;
+    }
+
+    if (n > 0)
+        return n;
+
+    err = -n;
+    if (err == NGX_EAGAIN || err == NGX_EINTR) {
+        ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, err,"readv() not ready");
+        n = NGX_AGAIN;
+    } else {
+        c->log_error = NGX_ERROR_IGNORE_ECONNRESET;
+        n = ngx_connection_error(c, err, "readv() failed");
+    }
+
+    return n;
+}
+
+static void
+ngx_http_read_request_handler(ngx_event_t *rev)
+{
+    u_char                    *p;
+    size_t                     size;
+    ssize_t                    n;
+    ngx_buf_t                 *b;
+    ngx_connection_t          *c;
+    ngx_http_connection_t     *hc;
+    ngx_http_core_srv_conf_t  *cscf;
+
+    c = rev->data;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http read request handler");
+
+    if (rev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    if (c->close) {
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    b = c->buffer;
+    hc = c->data;
+    n = ngx_get_async_read_bytes(rev);
+
+    if (n == NGX_AGAIN) {
+
+        if (!rev->timer_set)
+            ngx_add_timer(rev, c->listening->post_accept_timeout);
+
+        cscf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_core_module);
+        size = cscf->client_header_buffer_size;
+        if (ngx_handle_read_event_with_buf(rev, b->last, size) != NGX_OK) {
+            ngx_http_close_connection(c);
+            return;
+        }
+        return;
+    }
+
+    if (n < 0) {
+        ngx_log_error(NGX_LOG_INFO, c->log, n,
+                      "http read request failed");
+        ngx_http_close_connection(c);
+        return;
+    }
+    if (n == 0) {
+        ngx_log_error(NGX_LOG_INFO, c->log, 0,
+                      "client closed connection");
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    b->last += n;
+
+    if (hc->proxy_protocol) {
+        hc->proxy_protocol = 0;
+
+        p = ngx_proxy_protocol_read(c, b->pos, b->last);
+
+        if (p == NULL) {
+            ngx_http_close_connection(c);
+            return;
+        }
+
+        b->pos = p;
+
+        if (b->pos == b->last) {
+            c->log->action = "waiting for request";
+            b->pos = b->start;
+            b->last = b->start;
+            ngx_post_event(rev, &ngx_posted_events);
+            return;
+        }
+    }
+
+    c->log->action = "reading client request line";
+
+    ngx_reusable_connection(c, 0);
+
+    c->data = ngx_http_create_request(c);
+    if (c->data == NULL) {
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    rev->handler = ngx_http_process_request_line;
+    ngx_http_process_request_line(rev);
+}
+#endif
 
 static void
 ngx_http_wait_request_handler(ngx_event_t *rev)
@@ -386,6 +514,7 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http wait request handler");
 
+#if !(NGX_HAVE_IO_URING)
     if (rev->timedout) {
         ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
         ngx_http_close_connection(c);
@@ -396,6 +525,7 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
         ngx_http_close_connection(c);
         return;
     }
+#endif
 
     hc = c->data;
     cscf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_core_module);
@@ -426,6 +556,13 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
         b->end = b->last + size;
     }
 
+#if (NGX_HAVE_IO_URING)
+    rev->handler = ngx_http_read_request_handler;
+    if (ngx_handle_read_event_with_buf(rev, b->last, size) != NGX_OK) {
+        ngx_http_close_connection(c);
+    }
+    return;
+#endif
     n = c->recv(c, b->last, size);
 
     if (n == NGX_AGAIN) {
@@ -1519,9 +1656,14 @@ ngx_http_read_request_header(ngx_http_request_t *r)
         return n;
     }
 
+#if (NGX_HAVE_IO_URING)
+    if (rev->complete) {
+        n = ngx_get_async_read_bytes(rev);
+#else
     if (rev->ready) {
         n = c->recv(c, r->header_in->last,
                     r->header_in->end - r->header_in->last);
+#endif
     } else {
         n = NGX_AGAIN;
     }
@@ -1532,11 +1674,18 @@ ngx_http_read_request_header(ngx_http_request_t *r)
             ngx_add_timer(rev, cscf->client_header_timeout);
         }
 
+#if (NGX_HAVE_IO_URING)
+        if (ngx_handle_read_event_with_buf(rev, r->header_in->last,
+            r->header_in->end - r->header_in->last) != NGX_OK) {
+            ngx_http_close_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            return NGX_ERROR;
+        };
+#else
         if (ngx_handle_read_event(rev, 0) != NGX_OK) {
             ngx_http_close_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
             return NGX_ERROR;
         }
-
+#endif
         return NGX_AGAIN;
     }
 
