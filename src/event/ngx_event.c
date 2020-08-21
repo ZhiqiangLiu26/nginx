@@ -18,6 +18,7 @@ extern ngx_module_t ngx_eventport_module;
 extern ngx_module_t ngx_devpoll_module;
 extern ngx_module_t ngx_epoll_module;
 extern ngx_module_t ngx_select_module;
+extern ngx_module_t ngx_io_uring_module;
 
 
 static char *ngx_event_init_conf(ngx_cycle_t *cycle, void *conf);
@@ -1262,30 +1263,36 @@ ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf)
 
     module = NULL;
 
+#if (NGX_HAVE_IO_URING)
+    module = &ngx_io_uring_module;
+#endif
+
 #if (NGX_HAVE_EPOLL) && !(NGX_TEST_BUILD_EPOLL)
 
-    fd = epoll_create(100);
+    if (module == NULL) {
+        fd = epoll_create(100);
 
-    if (fd != -1) {
-        (void) close(fd);
-        module = &ngx_epoll_module;
+        if (fd != -1) {
+            (void) close(fd);
+            module = &ngx_epoll_module;
 
-    } else if (ngx_errno != NGX_ENOSYS) {
-        module = &ngx_epoll_module;
+        } else if (ngx_errno != NGX_ENOSYS) {
+            module = &ngx_epoll_module;
+        }
     }
 
 #endif
 
 #if (NGX_HAVE_DEVPOLL) && !(NGX_TEST_BUILD_DEVPOLL)
 
-    module = &ngx_devpoll_module;
+    if (module == NULL)
+        module = &ngx_devpoll_module;
 
 #endif
 
 #if (NGX_HAVE_KQUEUE)
-
-    module = &ngx_kqueue_module;
-
+    if (module == NULL)
+        module = &ngx_kqueue_module;
 #endif
 
 #if (NGX_HAVE_SELECT)

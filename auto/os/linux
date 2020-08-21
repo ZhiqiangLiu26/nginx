@@ -108,6 +108,8 @@ if [ $NGX_IO_URING = YES ]; then
     if [ $ngx_found = yes ]; then
         have=NGX_HAVE_EVENTFD . auto/have
         CORE_LIBS="$CORE_LIBS -luring"
+        CORE_SRCS="$CORE_SRCS $IO_URING_SRCS"
+        EVENT_MODULES="$EVENT_MODULES $IO_URING_MODULE"
     fi
 fi
 

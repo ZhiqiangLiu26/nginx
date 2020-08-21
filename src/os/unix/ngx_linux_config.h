@@ -98,6 +98,9 @@ extern ssize_t sendfile(int s, int fd, int32_t *offset, size_t size);
 typedef struct iocb  ngx_aiocb_t;
 #endif
 
+#if (NGX_HAVE_IO_URING)
+#include <liburing.h>
+#endif
 
 #if (NGX_HAVE_CAPABILITIES)
 #include <linux/capability.h>

@@ -271,7 +271,6 @@ extern ngx_uint_t            ngx_use_epoll_rdhup;
  */
 #define NGX_USE_VNODE_EVENT      0x00002000
 
-
 /*
  * The event filter is deleted just before the closing file.
  * Has no meaning for select and poll.
