@@ -9,6 +9,10 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
+#if (NGX_HAVE_IO_URING)
+extern struct io_uring ngx_ring;
+extern int register_file;
+#endif
 
 static ngx_int_t ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all);
 static void ngx_close_accepted_connection(ngx_connection_t *c);
@@ -308,6 +312,14 @@ ngx_event_accept(ngx_event_t *ev)
                 return;
             }
         }
+
+#if (NGX_HAVE_IO_URING)
+        if (register_file) {
+            if (io_uring_register_files_update(&ngx_ring, c->fd, &c->fd, 1) < 0) {
+                ngx_log_error(NGX_LOG_ALERT, log, 0, "register_files_update() failed");
+            }
+        }
+#endif
 
         log->data = NULL;
         log->handler = NULL;

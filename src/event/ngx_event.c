@@ -77,7 +77,10 @@ ngx_atomic_t         *ngx_stat_waiting = &ngx_stat_waiting0;
 
 #endif
 
-
+#if (NGX_HAVE_IO_URING)
+extern int register_file;
+extern struct io_uring ngx_ring;
+#endif
 
 static ngx_command_t  ngx_events_commands[] = {
 
@@ -831,6 +834,14 @@ ngx_event_process_init(ngx_cycle_t *cycle)
             return NGX_ERROR;
         }
 
+#if (NGX_HAVE_IO_URING)
+        if (register_file) {
+            if (io_uring_register_files_update(&ngx_ring, ls[i].fd, &ls[i].fd, 1) < 0) {
+                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                                "register listen fd: %d failed", ls[i].fd);
+            }
+        }
+#endif
         c->type = ls[i].type;
         c->log = &ls[i].log;
 

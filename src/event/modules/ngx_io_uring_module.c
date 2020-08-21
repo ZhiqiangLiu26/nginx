@@ -11,6 +11,7 @@
 
 typedef struct {
     ngx_uint_t  entries;
+    ngx_flag_t  register_file;
 } ngx_io_uring_conf_t;
 
 
@@ -42,6 +43,8 @@ static struct io_uring_cqe  **cqes;
 static ngx_uint_t           nevents;
 
 struct io_uring             ngx_ring;
+int *registered_files;
+int register_file;
 
 static ngx_str_t      io_uring_name = ngx_string("io_uring");
 
@@ -53,6 +56,14 @@ static ngx_command_t  ngx_io_uring_commands[] = {
       0,
       offsetof(ngx_io_uring_conf_t, entries),
       NULL },
+
+    { ngx_string("io_uring_register_file"),
+      NGX_EVENT_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_flag_slot,
+      0,
+      offsetof(ngx_io_uring_conf_t, register_file),
+      NULL },
+
 
       ngx_null_command
 };
@@ -93,6 +104,27 @@ ngx_module_t  ngx_io_uring_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static int init_register_files(ngx_cycle_t *cycle)
+{
+    int ret, i;
+    int max_register_files = 32768;
+
+    registered_files = ngx_alloc(max_register_files * sizeof(int), cycle->log);
+    if (!registered_files) {
+	return NGX_ERROR;
+    }
+    for (i = 0; i < max_register_files; i++)
+	registered_files[i] = -1;
+
+    ret = io_uring_register_files(&ngx_ring, registered_files, max_register_files);
+    if (ret < 0) {
+        ngx_free(registered_files);
+        registered_files = NULL;
+	return ret;
+    }
+    return 0;
+}
+
 static ngx_int_t
 ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
@@ -120,6 +152,18 @@ ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         }
     }
 
+    register_file = urcf->register_file;
+    if (register_file) {
+        if (init_register_files(cycle)) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "init_register_files() failed");
+            io_uring_queue_exit(&ngx_ring);
+            ngx_ring.ring_fd = 0;
+            ngx_free(cqes);
+            return NGX_ERROR;
+        }
+    }
+
     nevents = urcf->entries / 2;
 
     ngx_io = ngx_os_io;
@@ -131,6 +175,7 @@ ngx_io_uring_init(ngx_cycle_t *cycle, ngx_msec_t timer)
                       | NGX_USE_EPOLL_EVENT
                       | NGX_USE_IO_URING_EVENT;
 
+
     return NGX_OK;
 }
 
@@ -139,6 +184,7 @@ ngx_io_uring_done(ngx_cycle_t *cycle)
 {
     io_uring_queue_exit(&ngx_ring);
     ngx_ring.ring_fd = 0;
+    ngx_free(registered_files);
     ngx_free(cqes);
 }
 
@@ -151,6 +197,9 @@ io_uring_add_poll(struct io_uring *ring, int fd,
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_poll_add(sqe, fd, event);
+
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, data);
 }
 
@@ -162,6 +211,8 @@ io_uring_remove_poll(struct io_uring *ring, void *data)
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_poll_remove(sqe, data);
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, NULL);
 }
 
@@ -175,6 +226,8 @@ io_uring_add_recv(struct io_uring *ring, int fd,
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_recv(sqe, fd, buf, size, 0);
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, data);
 }
 
@@ -188,6 +241,8 @@ io_uring_add_send(struct io_uring *ring, int fd,
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_send(sqe, fd, buf, size, 0);
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, data);
 }
 
@@ -201,6 +256,8 @@ io_uring_add_readv(struct io_uring *ring, int fd,
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_readv(sqe, fd, iov, count, 0);
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, data);
 }
 
@@ -214,6 +271,8 @@ io_uring_add_writev(struct io_uring *ring, int fd,
     /* TODO: !sqe ? */
     if (!sqe) ngx_abort();
     io_uring_prep_writev(sqe, fd, iov, count, 0);
+    if (register_file)
+        sqe->flags |= IOSQE_FIXED_FILE;
     io_uring_sqe_set_data(sqe, data);
 }
 
@@ -571,6 +630,7 @@ ngx_io_uring_create_conf(ngx_cycle_t *cycle)
     }
 
     urcf->entries = NGX_CONF_UNSET;
+    urcf->register_file = NGX_CONF_UNSET;
 
     return urcf;
 }
@@ -581,6 +641,7 @@ ngx_io_uring_init_conf(ngx_cycle_t *cycle, void *conf)
     ngx_io_uring_conf_t *urcf = conf;
 
     ngx_conf_init_uint_value(urcf->entries, 512);
+    ngx_conf_init_value(urcf->register_file, 0);
 
     return NGX_CONF_OK;
 }

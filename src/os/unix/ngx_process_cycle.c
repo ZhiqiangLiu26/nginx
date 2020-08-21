@@ -69,6 +69,10 @@ static ngx_cycle_t      ngx_exit_cycle;
 static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
+#if (NGX_HAVE_IO_URING)
+extern struct io_uring ngx_ring;
+extern int register_file;
+#endif
 
 void
 ngx_master_process_cycle(ngx_cycle_t *cycle)
@@ -952,6 +956,14 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
 
 #if 0
     ngx_last_process = 0;
+#endif
+
+#if (NGX_HAVE_IO_URING)
+    if (register_file == 1) {
+        if (io_uring_register_files_update(&ngx_ring, ngx_channel, &ngx_channel, 1) < 1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0, "register_files_update() failed");
+        }
+    }
 #endif
 
     if (ngx_add_channel_event(cycle, ngx_channel, NGX_READ_EVENT,
