@@ -51,7 +51,11 @@ static void ngx_http_writer_done(ngx_http_request_t *r);
 static void ngx_http_request_finalizer(ngx_http_request_t *r);
 
 static void ngx_http_set_keepalive(ngx_http_request_t *r);
+#if (NGX_HAVE_IO_URING)
+static void ngx_http_keepalive_done_handler(ngx_event_t *ev);
+#else
 static void ngx_http_keepalive_handler(ngx_event_t *ev);
+#endif
 static void ngx_http_set_lingering_close(ngx_http_request_t *r);
 static void ngx_http_lingering_close_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_post_action(ngx_http_request_t *r);
@@ -3374,7 +3378,9 @@ ngx_http_set_keepalive(ngx_http_request_t *r)
 
     b = c->buffer;
 
-    if (ngx_pfree(c->pool, b->start) == NGX_OK) {
+    /* do not free the buffer when using io_uring since we will use it soon */
+    if (!(ngx_event_flags & NGX_USE_IO_URING_EVENT) &&
+        ngx_pfree(c->pool, b->start) == NGX_OK) {
 
         /*
          * the special note for ngx_http_keepalive_handler() that
@@ -3423,7 +3429,11 @@ ngx_http_set_keepalive(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HAVE_IO_URING)
+    rev->handler = ngx_http_keepalive_done_handler;
+#else
     rev->handler = ngx_http_keepalive_handler;
+#endif
 
     if (wev->active && (ngx_event_flags & NGX_USE_LEVEL_EVENT)) {
         if (ngx_del_event(wev, NGX_WRITE_EVENT, 0) != NGX_OK) {
@@ -3458,6 +3468,14 @@ ngx_http_set_keepalive(ngx_http_request_t *r)
     r->http_state = NGX_HTTP_KEEPALIVE_STATE;
 #endif
 
+#if (NGX_HAVE_IO_URING)
+    if (ngx_handle_read_event_with_buf(rev, b->last, b->end - b->start)
+            != NGX_OK) {
+        ngx_http_close_connection(c);
+        return;
+    }
+    ngx_add_timer(rev, clcf->keepalive_timeout);
+#else
     c->idle = 1;
     ngx_reusable_connection(c, 1);
 
@@ -3466,9 +3484,70 @@ ngx_http_set_keepalive(ngx_http_request_t *r)
     if (rev->ready) {
         ngx_post_event(rev, &ngx_posted_events);
     }
+#endif
+}
+
+#if (NGX_HAVE_IO_URING)
+static void
+ngx_http_keepalive_done_handler(ngx_event_t *rev)
+{
+    ngx_connection_t          *c = rev->data;
+    ssize_t                    n;
+    ngx_buf_t                 *b = c->buffer;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http keepalive request handler");
+
+    if (rev->timedout || c->close) {
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    n = ngx_get_async_read_bytes(rev);
+
+    if (n == NGX_AGAIN) {
+        if (ngx_handle_read_event_with_buf(rev, b->last, b->end - b->start) != NGX_OK) {
+            ngx_http_close_connection(c);
+            return;
+        }
+        return;
+    }
+    if (n < 0) {
+        ngx_log_error(NGX_LOG_INFO, c->log, n,
+                      "http read request failed");
+        ngx_http_close_connection(c);
+        return;
+    }
+    c->log->handler = NULL;
+
+    if (n == 0) {
+        ngx_log_error(NGX_LOG_INFO, c->log, 0,
+                      "client closed connection");
+        ngx_http_close_connection(c);
+        return;
+    }
+
+    b->last += n;
+
+    c->log->handler = ngx_http_log_error;
+    c->log->action = "reading client request line";
+
+    c->data = ngx_http_create_request(c);
+    if (c->data == NULL) {
+        ngx_http_close_connection(c);
+	return;
+    }
+
+    c->sent = 0;
+    c->destroyed = 0;
+
+    ngx_del_timer(rev);
+
+    rev->handler = ngx_http_process_request_line;
+    ngx_http_process_request_line(rev);
 }
 
 
+#else
 static void
 ngx_http_keepalive_handler(ngx_event_t *rev)
 {
@@ -3598,7 +3677,7 @@ ngx_http_keepalive_handler(ngx_event_t *rev)
     rev->handler = ngx_http_process_request_line;
     ngx_http_process_request_line(rev);
 }
-
+#endif
 
 static void
 ngx_http_set_lingering_close(ngx_http_request_t *r)
