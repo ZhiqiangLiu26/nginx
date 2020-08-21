@@ -45,6 +45,8 @@ USE_THREADS=NO
 
 NGX_FILE_AIO=NO
 
+NGX_IO_URING=NO
+
 HTTP=YES
 
 NGX_HTTP_LOG_PATH=
@@ -206,6 +208,8 @@ do
         --with-threads)                  USE_THREADS=YES            ;;
 
         --with-file-aio)                 NGX_FILE_AIO=YES           ;;
+
+        --with-io-uring)                 NGX_IO_URING=YES           ;;
 
         --with-ipv6)
             NGX_POST_CONF_MSG="$NGX_POST_CONF_MSG

@@ -88,6 +88,28 @@ if [ $ngx_found = yes ]; then
     . auto/feature
 fi
 
+if [ $NGX_IO_URING = YES ]; then
+
+    ngx_feature="Linux io_uring support"
+    ngx_feature_name="NGX_HAVE_IO_URING"
+    ngx_feature_incs="#include <liburing.h>"
+    ngx_feature_path=
+    ngx_feature_libs="-luring"
+    ngx_feature_test="struct io_uring ring;
+                      struct io_uring_params params;
+                      int ret;
+                      memset(&params, 0, sizeof(params));
+                      ret = io_uring_queue_init_params(64, &ring, &params);
+                      if (ret < 0) return 1;
+                      if (!(params.features & IORING_FEAT_FAST_POLL)) return 1;
+                      io_uring_queue_exit(&ring)"
+    . auto/feature
+
+    if [ $ngx_found = yes ]; then
+        have=NGX_HAVE_EVENTFD . auto/have
+        CORE_LIBS="$CORE_LIBS -luring"
+    fi
+fi
 
 # O_PATH and AT_EMPTY_PATH were introduced in 2.6.39, glibc 2.14
 
